@@ -16,15 +16,17 @@ https://github.com/user-attachments/assets/ef32a812-f45d-4bb9-9959-109d0f09b2bd
 
 Capital One shut down Eno, its Chrome extension, on September 30, 2026. I used it constantly: a fresh virtual card number for every site, always one click away. I wasn't ready to give that up, and I know I'm not the only one. So I built my own, and I'm giving it away.
 
-It's not a perfect replacement. You still sign in to Capital One yourself, and it can't fill in checkout forms for you. But it gets most of the way back.
+It's not a perfect replacement: you still sign in to Capital One yourself. But with automatic background tab management, one-click card creation, and checkout form autofill, it gets almost all the way back.
 
 It works in Chrome, Microsoft Edge, and Firefox.
 
 ## What it does
 
 - Shows all your virtual cards, with search and filters
-- Suggests the right card for the site you're on
-- Creates new cards and shows card numbers, with copy buttons
+- Automatically opens a Capital One background tab when needed (and preserves your Firefox Container tab, such as a Banking container)
+- Suggests the right card for the site you're on with one-click **Use & Autofill**
+- Prompts to **Create & Autofill** a new virtual card when no card matches the current site, automatically filling the merchant nickname and submitting on Capital One's create screen (pausing safely if 2FA step-up is requested)
+- Autofills checkout forms (including Stripe Elements, Shopify, Braintree, Adyen, split month/year dropdowns, and React/masked inputs), with an **Autofill** button and copy buttons in the panel
 - Locks, unlocks, renames and deletes cards
 
 ## Install
@@ -62,8 +64,10 @@ If you'd rather not use the Chrome Web Store, Chrome can install the extension f
 
 ## Using it
 
-- **It works through a Capital One tab.** It opens one in the background when it needs one. If Capital One signs you out, which it does after a while, just sign back in.
-- **To see a card number**, click **Show**. It opens Capital One's own page for a moment, then brings you back with the number in the panel. Once per session, Capital One may text you a code first. You type it on their page, never in this extension.
+- **It works through a Capital One tab.** It opens one in the background whenever needed (reusing your Capital One Firefox Container if you use Container Tabs). If Capital One signs you out, which it does after a while, just sign back in.
+- **To use an existing card on a checkout page**, click **Use & Autofill** on the suggested card (or **Show** on any card in the list). It opens Capital One's page for a moment, captures the card details, brings you back to your checkout tab, and automatically fills the card number, expiration date, and security code. Once per session, Capital One may text you a code first—you type it on their page, never in this extension.
+- **To create a new card for the site you're on**, click **Create & Autofill for `<site>`** in the top prompt (or **New card**). It opens Capital One's create screen, fills the site name, submits the form (unless Capital One asks for a 2FA code first), captures the new card, switches back to your checkout tab, and autofills the checkout fields.
+- **If you open the checkout form after revealing or creating a card**, click **Autofill** in the Card details box to fill the active tab at any time while the card is shown.
 - **Card numbers disappear from the panel after 3 minutes**, or as soon as you close it.
 
 ## Your privacy
@@ -81,9 +85,9 @@ All of the code is in this repository, and it's short enough to read. The [priva
 <details>
 <summary><strong>Why Virtual Card Helper asks for each permission</strong></summary>
 
-- **Read and change your data on myaccounts.capitalone.com.** This lets it talk to Capital One from your signed-in tab. It can't touch any other website.
+- **Read and change your data on myaccounts.capitalone.com and checkout pages.** Persistent content scripts run **only** on `myaccounts.capitalone.com` to talk to Capital One from your signed-in tab. On other websites, `content/autofill.js` is injected on demand only when autofilling a card, and never reads or returns page content.
 - **Tabs.** It reads the address of the tab you're on so it can suggest cards, find your Capital One tab, and bring you back afterwards. Chrome's name for this permission is "Read your browsing history," and Firefox's is "Access browser tabs." It doesn't read your history, and it doesn't keep the addresses it sees.
-- **Scripting.** Lets it reconnect to a Capital One tab that was already open before the extension was installed or updated.
+- **Scripting.** Lets it reconnect to a Capital One tab that was already open and inject the on-demand checkout autofill helper into the active tab.
 - **Storage.** Saves the nicknames and settings listed above.
 - **Side panel** (Chrome and Edge) **or sidebar** (Firefox). Shows the panel beside the page you're on.
 
@@ -107,7 +111,7 @@ Your nicknames and settings carry over. To hear about new versions, click **Watc
 
 - It works in Chrome 116 or newer, Microsoft Edge, and Firefox 140 or newer, on a computer. It doesn't work in Firefox for Android.
 - If Capital One changes its website, the extension may stop working until I update it.
-- It can't fill in checkout forms. You copy and paste.
+- If a page has no detectable checkout fields when a card is captured, the card number is automatically copied to your clipboard and you can click **Autofill** or **Copy** from the panel.
 
 ## Questions or problems
 

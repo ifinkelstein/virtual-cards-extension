@@ -87,12 +87,17 @@ const els = {
   capturedExpiry: document.getElementById('captured-expiry'),
   capturedCvv: document.getElementById('captured-cvv'),
   capturedToggle: document.getElementById('captured-toggle'),
+  capturedAutofill: document.getElementById('captured-autofill'),
   capturedDismiss: document.getElementById('captured-dismiss'),
   capturedCountdown: document.getElementById('captured-countdown'),
   cards: document.getElementById('cards'),
   template: document.getElementById('card-template'),
   suggested: document.getElementById('suggested'),
   suggestedTitle: document.getElementById('suggested-title'),
+  suggestedCreate: document.getElementById('suggested-create'),
+  suggestedEmpty: document.getElementById('suggested-empty'),
+  suggestedPrompt: document.getElementById('suggested-prompt'),
+  suggestedPromptCreate: document.getElementById('suggested-prompt-create'),
   suggestedCards: document.getElementById('suggested-cards'),
   suggestedTemplate: document.getElementById('suggested-template'),
   notice: document.getElementById('notice'),
@@ -110,6 +115,7 @@ let searchTimer;
 let armedDelete = null; // the one card whose Delete is waiting for a confirming click
 let captured = null; // card details read off Capital One's page: memory only
 let pendingCard = null; // the card we asked Capital One to open, so the capture can be named
+let pendingCreate = null; // the new card nickname and auto-submit flag for create-virtual-card
 let capturedRevealed = false;
 let captureTimer;
 let countdownTimer;
@@ -117,6 +123,8 @@ let needsData = true; // cleared once a load succeeds
 let waitTimer = null;
 let autoOpen = true;
 let autoOpenedTabId = null; // one unprompted tab is enough; never pile them up
+let ensuringTab = null; // shared in-flight promise so concurrent callers open at most one tab
+let lastCookieStoreId = null; // Firefox container where Capital One was last seen
 let returnToTab = null; // where you were before any detour over to Capital One
 let signInShown = false; // the signed-out tab is already in front; once per sign-in
 let sentHome = false; // the tab was already sent to Capital One's home since the last good load
@@ -180,7 +188,23 @@ function stopWaiting() {
 // Opens Capital One in a background tab when the panel needs one, so keeping a tab
 // around is not your job. It never steals focus — except when Capital One wants you to
 // sign in, which you cannot act on if you cannot see it.
-async function ensureCapitalOneTab() {
+function ensureCapitalOneTab() {
+  if (!ensuringTab) ensuringTab = doEnsureCapitalOneTab().finally(() => (ensuringTab = null));
+  return ensuringTab;
+}
+
+async function createTab(options) {
+  if (lastCookieStoreId && lastCookieStoreId !== 'firefox-default') {
+    try {
+      return await chrome.tabs.create({ ...options, cookieStoreId: lastCookieStoreId });
+    } catch {
+      // Browser rejected cookieStoreId; fall back to default tab creation.
+    }
+  }
+  return chrome.tabs.create(options);
+}
+
+async function doEnsureCapitalOneTab() {
   const existing = await findCapitalOneTab();
   if (existing) {
     autoOpenedTabId = null;
@@ -188,11 +212,22 @@ async function ensureCapitalOneTab() {
   }
   if (!autoOpen) return null;
 
+  if (autoOpenedTabId !== null) {
+    const prior = await chrome.tabs.get(autoOpenedTabId).catch(() => null);
+    let onC1 = false;
+    try {
+      onC1 = isCapitalOne(new URL(prior?.url ?? '').hostname) || prior?.url === 'about:blank';
+    } catch {
+      onC1 = false;
+    }
+    if (!prior || !onC1) autoOpenedTabId = null;
+  }
+
   // A tab Capital One already signed out is reused, not joined by a second one. The load
   // that follows fails, and bringSignInForward puts that tab in front of you.
   if (autoOpenedTabId !== null || (await findSignedOutTab())) return null;
 
-  const created = await chrome.tabs.create({ url: CAPITAL_ONE_HOME, active: false });
+  const created = await createTab({ url: CAPITAL_ONE_HOME, active: false });
   autoOpenedTabId = created.id;
   // This can take a while, and the tab is invisible, so say what is happening.
   setWorking('Opening Capital One in a background tab…');
@@ -246,18 +281,31 @@ async function returnToPreviousTab() {
 // Resolves with the tab once it finishes loading on the servicing host, or null.
 function waitForTabReady(tabId) {
   return new Promise(resolve => {
+    let settled = false;
     let timer;
     const onUpdated = (id, changeInfo, tab) => {
       if (id !== tabId || changeInfo.status !== 'complete') return;
-      finish(tab.url?.startsWith('https://myaccounts.capitalone.com/') ? tab : null);
+      // Firefox fires status: 'complete' on the initial about:blank before navigating.
+      if (!tab.url || tab.url === 'about:blank') return;
+      finish(tab.url.startsWith('https://myaccounts.capitalone.com/') ? tab : null);
     };
     function finish(result) {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       chrome.tabs.onUpdated.removeListener(onUpdated);
       resolve(result);
     }
     timer = setTimeout(() => finish(null), TAB_READY_TIMEOUT_MS);
     chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs
+      .get?.(tabId)
+      .then(tab => {
+        if (tab?.status === 'complete' && tab.url && tab.url !== 'about:blank') {
+          finish(tab.url.startsWith('https://myaccounts.capitalone.com/') ? tab : null);
+        }
+      })
+      .catch(() => {});
   });
 }
 
@@ -315,11 +363,13 @@ function currentAccount() {
 async function findCapitalOneTab() {
   const tabs = await chrome.tabs.query({ url: CAPITAL_ONE_MATCH });
   const [tab] = tabs.toSorted((a, b) => (b.active - a.active) || ((b.lastAccessed ?? 0) - (a.lastAccessed ?? 0)));
+  if (tab?.cookieStoreId) lastCookieStoreId = tab.cookieStoreId;
   return tab ?? null;
 }
 
 async function findSignedOutTab() {
   const [tab] = await chrome.tabs.query({ url: CAPITAL_ONE_SIGNED_OUT });
+  if (tab?.cookieStoreId) lastCookieStoreId = tab.cookieStoreId;
   return tab ?? null;
 }
 
@@ -360,7 +410,10 @@ async function needsSignIn(error) {
 
 // Talks to the content script, injecting it first if this tab predates the extension.
 async function callBridge(type, payload = {}) {
-  const tab = await findCapitalOneTab();
+  let tab = await findCapitalOneTab();
+  if (!tab && autoOpen && type !== 'ping') {
+    tab = await ensureCapitalOneTab().catch(() => null);
+  }
   if (!tab) {
     const error = new Error('No Capital One tab is open.');
     error.code = 'NO_TAB';
@@ -405,7 +458,7 @@ async function showTab(tab, url) {
 async function openCapitalOne(url) {
   const tab = await findCapitalOneTab();
   if (tab) return showTab(tab, url);
-  await chrome.tabs.create({ url });
+  await createTab({ url });
 }
 
 // The one message shown whenever there is no usable tab. It stays on screen while the
@@ -708,12 +761,15 @@ function bindingMatches(card, host) {
 // the 50-card page, or on the account you have not selected, still surfaces.
 async function loadSuggestions() {
   const { host, term } = await activeSite();
+  if (host && term && !Object.keys(accounts).length && autoOpen) {
+    await reload();
+  }
   if (!host || !term || !Object.keys(accounts).length) {
-    renderSuggestions([]);
+    renderSuggestions([], '');
     return;
   }
   if (suggestionCache.has(host)) {
-    renderSuggestions(suggestionCache.get(host));
+    renderSuggestions(suggestionCache.get(host), host);
     return;
   }
 
@@ -759,16 +815,36 @@ async function loadSuggestions() {
     .slice(0, SUGGEST_LIMIT);
   // A failed search, such as one with no Capital One tab open, says nothing about this site.
   // Remembering its empty answer kept the site blank even after Capital One was back.
-  if (!searchFailed) suggestionCache.set(host, matches);
-  renderSuggestions(matches);
+  if (searchFailed) {
+    renderSuggestions([], '');
+    return;
+  }
+  suggestionCache.set(host, matches);
+  renderSuggestions(matches, host);
 }
 
-function renderSuggestions(matches) {
+function renderSuggestions(matches, host = '') {
   els.suggestedCards.replaceChildren();
-  els.suggested.hidden = matches.length === 0;
-  if (!matches.length) return;
+  if (!host) {
+    els.suggested.hidden = true;
+    return;
+  }
+  els.suggested.hidden = false;
 
-  els.suggestedTitle.textContent = matches.length === 1 ? 'Suggested card' : 'Suggested cards';
+  if (!matches.length) {
+    els.suggestedTitle.textContent = `No card for ${host}`;
+    els.suggestedCreate.hidden = true;
+    els.suggestedEmpty.hidden = false;
+    els.suggestedPrompt.textContent = `No active virtual card found for ${host}.`;
+    els.suggestedPromptCreate.textContent = `Create & Autofill for ${host}`;
+    els.suggestedPromptCreate.onclick = () => startCreateCard(host, true);
+    return;
+  }
+
+  els.suggestedEmpty.hidden = true;
+  els.suggestedCreate.hidden = false;
+  els.suggestedCreate.onclick = () => startCreateCard(host, true);
+  els.suggestedTitle.textContent = matches.length === 1 ? `For ${host}` : `Cards for ${host}`;
   const selected = currentArid();
 
   for (const { card, arid, account } of matches) {
@@ -1082,7 +1158,9 @@ async function findCapturedName(details) {
 }
 
 function showCaptured(details) {
-  captured = { ...details, label: nameForCapture(details) };
+  const createdName = pendingCreate?.name ?? '';
+  pendingCreate = null;
+  captured = { ...details, label: nameForCapture(details) || createdName };
   capturedRevealed = false; // always arrives hidden, however the last one was left
   renderCaptured();
   els.captured.hidden = false;
@@ -1091,12 +1169,105 @@ function showCaptured(details) {
   captureTimer = setTimeout(clearCaptured, CAPTURE_TTL_MS);
   startCountdown(Date.now() + CAPTURE_TTL_MS);
 
-  // The errand is done and the details are in the panel, so there is no reason to leave
-  // you sitting on Capital One. Not awaited: the details are already on screen.
-  returnToPreviousTab().catch(() => {});
+  const targetTabId = returnToTab?.tabId ?? null;
+  // The errand is done and the details are in the panel, so return to the merchant tab
+  // and immediately autofill any detected checkout fields on that page.
+  returnToPreviousTab()
+    .then(() => autofillActiveTab(targetTabId))
+    .catch(() => {});
 
-  // Nothing in the loaded list matched, which is exactly what a just-created card looks like.
-  if (!captured.label) findCapturedName(details).catch(() => {});
+  if (createdName) {
+    suggestionCache.clear();
+    refresh().then(() => loadSuggestions()).catch(() => {});
+  } else if (!captured.label) {
+    // Nothing in the loaded list matched, which is what a manually created card looks like.
+    findCapturedName(details).catch(() => {});
+  }
+}
+
+async function copyNumberFallback(statusText) {
+  if (!captured?.number) return;
+  try {
+    await navigator.clipboard.writeText(captured.number);
+    setStatus(statusText);
+  } catch {
+    setStatus('Card details ready below. Press Autofill or Copy when on checkout.');
+  }
+}
+
+async function autofillActiveTab(preferredTabId = null) {
+  if (!captured) return false;
+  let tab = null;
+  if (preferredTabId !== null) {
+    tab = await chrome.tabs.get(preferredTabId).catch(() => null);
+  }
+  if (!tab) {
+    [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  }
+  let hostname = '';
+  try {
+    const url = new URL(tab?.url ?? '');
+    if ((url.protocol === 'https:' || url.protocol === 'http:') && !isCapitalOne(url.hostname)) {
+      hostname = url.hostname.replace(/^www\./, '');
+    }
+  } catch {
+    hostname = '';
+  }
+  if (!tab?.id || !hostname) {
+    await copyNumberFallback('Card ready — switch to your checkout tab and press Autofill.');
+    return false;
+  }
+
+  let injections = [];
+  try {
+    injections = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      files: ['content/autofill.js'],
+    });
+  } catch {
+    await copyNumberFallback(`Card ready — could not access ${hostname}, so card number was copied.`);
+    return false;
+  }
+
+  const responses = await Promise.all(
+    injections.map(({ frameId }) =>
+      chrome.tabs
+        .sendMessage(tab.id, { type: 'AUTOFILL_CARD', payload: captured }, { frameId })
+        .catch(() => null),
+    ),
+  );
+  const filled = new Set(responses.flatMap(res => res?.filled ?? []));
+  if (filled.size > 0) {
+    const parts = ['number', 'expiry', 'cvv'].filter(key => filled.has(key)).map(key => COPY_LABELS[key].toLowerCase());
+    setStatus(`Autofilled ${parts.join(', ')} on ${hostname}.`);
+    return true;
+  }
+
+  await copyNumberFallback(`No checkout fields found on ${hostname} — card number copied to clipboard.`);
+  return false;
+}
+
+async function startCreateCard(preferredName, autoSubmit = true) {
+  if (!currentArid()) await reload();
+  const arid = currentArid();
+  if (!arid) return;
+  pendingCard = null; // a card that does not exist yet cannot be named from the list
+  await rememberCurrentTab();
+  const name = preferredName ?? (await suggestedName());
+  pendingCreate = name ? { name, autoSubmit: Boolean(autoSubmit) } : null;
+  if (name) {
+    try {
+      await navigator.clipboard.writeText(name);
+    } catch {
+      // Clipboard can be refused; capture.js also fills the input directly.
+    }
+  }
+  await openCapitalOne(C1_PAGES.create(arid));
+  setStatus(
+    name
+      ? `Creating virtual card for "${name}" on Capital One…`
+      : 'Opened Capital One to create a virtual card.',
+  );
 }
 
 // Counts down to the same deadline as captureTimer, so the number on screen and the
@@ -1255,6 +1426,10 @@ async function init() {
 
   els.capturedDismiss.addEventListener('click', clearCaptured);
 
+  els.capturedAutofill.addEventListener('click', () => {
+    autofillActiveTab().catch(() => {});
+  });
+
   els.capturedToggle.addEventListener('click', () => {
     capturedRevealed = !capturedRevealed;
     renderCaptured();
@@ -1271,26 +1446,23 @@ async function init() {
     }
   });
 
-  // The capture content script sends details the moment Capital One renders them.
-  chrome.runtime.onMessage.addListener(message => {
-    if (message?.type === 'CARD_DETAILS') showCaptured(message.payload);
+  // The capture content script sends details the moment Capital One renders them,
+  // and asks for the pending card name when on the create-virtual-card screen.
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === 'CARD_DETAILS') {
+      showCaptured(message.payload);
+      return undefined;
+    }
+    if (message?.type === 'GET_PENDING_CREATE') {
+      sendResponse(pendingCreate);
+      if (pendingCreate) pendingCreate = { ...pendingCreate, autoSubmit: false };
+      return false;
+    }
+    return undefined;
   });
 
-  els.create.addEventListener('click', async () => {
-    const arid = currentArid();
-    if (!arid) return;
-    pendingCard = null; // a card that does not exist yet cannot be named from the list
-    await rememberCurrentTab();
-    const name = await suggestedName();
-    if (name) {
-      try {
-        await navigator.clipboard.writeText(name);
-      } catch {
-        // Clipboard can be refused; the page still opens.
-      }
-    }
-    await openCapitalOne(C1_PAGES.create(arid));
-    setStatus(name ? `Opened Capital One. "${name}" is on your clipboard for the card name.` : 'Opened Capital One.');
+  els.create.addEventListener('click', () => {
+    startCreateCard(undefined, true).catch(() => {});
   });
 }
 

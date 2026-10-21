@@ -497,12 +497,39 @@ button.danger.armed:hover:not(:disabled) {
   --line: var(--suggest-card-line);
 }
 
+.suggested-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .suggested-title {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   overflow-wrap: anywhere;
+}
+
+.suggested-new {
+  padding: 2px 7px;
+  font-size: 11px;
+  border-color: var(--suggest-line);
+  color: var(--fg);
+}
+
+.suggested-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suggested-prompt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg);
 }
 
 .cards {

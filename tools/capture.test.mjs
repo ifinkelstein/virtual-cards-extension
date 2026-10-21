@@ -103,3 +103,393 @@ for (const { name, input, expect } of cases) {
     assert.deepEqual(got, expect);
   });
 }
+
+test('create screen pre-fills card name and clicks create button when pending', async () => {
+  const nameInput = {
+    tagName: 'INPUT',
+    type: 'text',
+    name: 'cardNickname',
+    placeholder: 'Name your virtual card',
+    value: '',
+  };
+  let clicked = false;
+  const createBtn = {
+    tagName: 'BUTTON',
+    textContent: 'Create Virtual Card',
+    click() {
+      clicked = true;
+    },
+  };
+  const context = {
+    document: {
+      documentElement: {},
+      body: { innerText: 'Create a virtual card' },
+      querySelectorAll(selector) {
+        if (selector === 'input') return [nameInput];
+        if (selector.includes('button')) return [createBtn];
+        return [];
+      },
+    },
+    location: { pathname: '/vc/create-virtual-card' },
+    chrome: {
+      runtime: {
+        sendMessage: async message => {
+          if (message.type === 'GET_PENDING_CREATE') return { name: 'newegg.com', autoSubmit: true };
+          return null;
+        },
+      },
+    },
+    MutationObserver: class {
+      observe() {}
+    },
+    setTimeout: fn => fn(),
+    clearTimeout,
+  };
+  vm.runInContext(source, vm.createContext(context));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nameInput.value, 'newegg.com');
+  assert.equal(clicked, true);
+});
+
+test('create screen aborts auto-fill and auto-submit when 2FA step-up is on screen', async () => {
+  const otpInput = {
+    tagName: 'INPUT',
+    type: 'text',
+    name: 'otpCode',
+    placeholder: 'Enter 6-digit code',
+    value: '',
+    getAttribute: k => (k === 'autocomplete' ? 'one-time-code' : null),
+  };
+  let clicked = false;
+  const continueBtn = {
+    tagName: 'BUTTON',
+    textContent: 'Continue',
+    click() {
+      clicked = true;
+    },
+  };
+  const context = {
+    document: {
+      documentElement: {},
+      body: { innerText: 'Verify your identity. Enter the 6-digit verification code we texted you.' },
+      querySelectorAll(selector) {
+        if (selector === 'input') return [otpInput];
+        if (selector.includes('button')) return [continueBtn];
+        return [];
+      },
+    },
+    location: { pathname: '/vc/create-virtual-card' },
+    chrome: {
+      runtime: {
+        sendMessage: async message => {
+          if (message.type === 'GET_PENDING_CREATE') return { name: 'newegg.com', autoSubmit: true };
+          return null;
+        },
+      },
+    },
+    MutationObserver: class {
+      observe() {}
+    },
+    setTimeout: fn => fn(),
+    clearTimeout,
+  };
+  vm.runInContext(source, vm.createContext(context));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(otpInput.value, '');
+  assert.equal(clicked, false);
+});
+
+test('create screen traverses open shadow roots and waits for input event to enable submit', async () => {
+  let trackedValue = '';
+  let clicked = false;
+  const createBtn = {
+    tagName: 'BUTTON',
+    textContent: 'Create Virtual Card',
+    disabled: true,
+    click() {
+      if (!this.disabled) clicked = true;
+    },
+  };
+  const shadowInput = {
+    tagName: 'INPUT',
+    type: 'text',
+    name: 'nickname',
+    placeholder: 'Virtual card name',
+    value: '',
+    _valueTracker: {
+      setValue(v) {
+        trackedValue = v;
+      },
+    },
+    dispatchEvent(ev) {
+      if (ev.type === 'input' && trackedValue !== this.value && this.value === 'heb.com') {
+        createBtn.disabled = false;
+      }
+    },
+  };
+  const customHost = {
+    shadowRoot: {
+      querySelectorAll(selector) {
+        if (selector === 'input') return [shadowInput];
+        if (selector.includes('button')) return [createBtn];
+        return [];
+      },
+    },
+  };
+  const context = {
+    Event: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    document: {
+      documentElement: {},
+      body: { innerText: 'Create a virtual card' },
+      querySelectorAll(selector) {
+        if (selector === '*') return [customHost];
+        return [];
+      },
+    },
+    location: { pathname: '/vc/create-virtual-card' },
+    chrome: {
+      runtime: {
+        sendMessage: async message => {
+          if (message.type === 'GET_PENDING_CREATE') return { name: 'heb.com', autoSubmit: true };
+          return null;
+        },
+      },
+    },
+    MutationObserver: class {
+      observe() {}
+    },
+    setTimeout: fn => fn(),
+    clearTimeout,
+  };
+  vm.runInContext(source, vm.createContext(context));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(shadowInput.value, 'heb.com');
+  assert.equal(createBtn.disabled, false);
+  assert.equal(clicked, true);
+});
+
+const autofillSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'content', 'autofill.js'), 'utf8');
+
+test('autofill.js fills standard checkout inputs and split month/year selects', () => {
+  const numInput = { tagName: 'INPUT', type: 'text', name: 'cardnumber', value: '', getAttribute: k => (k === 'autocomplete' ? 'cc-number' : null) };
+  const monthSelect = {
+    tagName: 'SELECT',
+    name: 'expMonth',
+    value: '',
+    getAttribute: k => (k === 'autocomplete' ? 'cc-exp-month' : null),
+    options: [
+      { value: '01', textContent: '01 - Jan' },
+      { value: '07', textContent: '07 - Jul' },
+    ],
+  };
+  const yearSelect = {
+    tagName: 'SELECT',
+    name: 'expYear',
+    value: '',
+    getAttribute: k => (k === 'autocomplete' ? 'cc-exp-year' : null),
+    options: [
+      { value: '2028', textContent: '2028' },
+      { value: '2029', textContent: '2029' },
+    ],
+  };
+  const cvvInput = { tagName: 'INPUT', type: 'tel', name: 'cvc', value: '', getAttribute: k => (k === 'autocomplete' ? 'cc-csc' : null) };
+
+  const context = {
+    document: {
+      querySelectorAll: () => [numInput, monthSelect, yearSelect, cvvInput],
+    },
+  };
+  vm.runInContext(autofillSource, vm.createContext(context));
+  const res = context.vchAutofillCard({ number: '4111111111111111', expiry: '07/29', cvv: '737' });
+  assert.deepEqual([...res.filled], ['number', 'expiry', 'cvv']);
+  assert.equal(numInput.value, '4111111111111111');
+  assert.equal(monthSelect.value, '07');
+  assert.equal(yearSelect.value, '2029');
+  assert.equal(cvvInput.value, '737');
+});
+
+test('autofill.js handles React _valueTracker, strict PAN/expiry masks, and ignores non-card fields', () => {
+  const holderInput = { tagName: 'INPUT', type: 'text', name: 'cardholderName', value: '', getAttribute: k => (k === 'autocomplete' ? 'cc-name' : null) };
+  const zipInput = { tagName: 'INPUT', type: 'text', name: 'billingZip', value: '', getAttribute: k => (k === 'autocomplete' ? 'postal-code' : null) };
+  const promoInput = { tagName: 'INPUT', type: 'text', name: 'promoCode', placeholder: 'Promo or gift card code', value: '', getAttribute: () => null };
+
+  // Simulates a strict grouped PAN mask that rejects unspaced 16-digit input.
+  let reactPanState = '';
+  let panTracked = '';
+  const maskedPanInput = {
+    tagName: 'INPUT',
+    type: 'text',
+    name: 'card_number',
+    placeholder: '4111 1111 1111 1111',
+    maxLength: 19,
+    value: '',
+    getAttribute: () => null,
+    _valueTracker: {
+      setValue(v) {
+        panTracked = v;
+      },
+    },
+    dispatchEvent(ev) {
+      if (ev.type === 'input') {
+        if (!/^\d{4} \d{4} \d{4} \d{4}$/.test(this.value)) {
+          this.value = '';
+          return;
+        }
+        if (panTracked !== this.value) reactPanState = this.value;
+      }
+    },
+  };
+
+  // Simulates an expiry mask that inserts its own slash and corrupts "07/29",
+  // expecting raw digits "0729" which it formats to "07/29".
+  const maskedExpiryInput = {
+    tagName: 'INPUT',
+    type: 'text',
+    name: 'cc_exp',
+    placeholder: 'MM/YY',
+    maxLength: 5,
+    value: '',
+    getAttribute: () => null,
+    dispatchEvent(ev) {
+      if (ev.type === 'input') {
+        if (this.value === '07/29') this.value = '07-bad';
+        else if (this.value === '0729') this.value = '07/29';
+      }
+    },
+  };
+
+  const context = {
+    Event: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    document: {
+      querySelectorAll: () => [holderInput, zipInput, promoInput, maskedPanInput, maskedExpiryInput],
+    },
+  };
+  vm.runInContext(autofillSource, vm.createContext(context));
+  const res = context.vchAutofillCard({ number: '4111111111111111', expiry: '07/29', cvv: '737' });
+  assert.deepEqual([...res.filled], ['number', 'expiry']);
+  assert.equal(reactPanState, '4111 1111 1111 1111');
+  assert.equal(maskedExpiryInput.value, '07/29');
+  assert.equal(holderInput.value, '');
+  assert.equal(zipInput.value, '');
+  assert.equal(promoInput.value, '');
+});
+
+const panelSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'sidepanel', 'panel.js'), 'utf8');
+
+test('panel.js preserves Firefox container cookieStoreId and ignores initial about:blank complete event', async () => {
+  const createdTabs = [];
+  const updatedListeners = [];
+  const removedListeners = [];
+  let signedOutTabs = [{ id: 10, url: 'https://verified.capitalone.com/auth/signin', cookieStoreId: 'firefox-container-3' }];
+  let c1Tabs = [];
+
+  const stubEl = () => ({
+    hidden: false,
+    value: '',
+    checked: true,
+    textContent: '',
+    dataset: {},
+    style: { setProperty() {} },
+    classList: { add() {}, remove() {} },
+    options: [],
+    replaceChildren() {},
+    append() {},
+    addEventListener() {},
+    setAttribute() {},
+    removeAttribute() {},
+  });
+
+  const context = {
+    URL,
+    Option: class {
+      constructor(text, value) {
+        this.textContent = text;
+        this.value = value;
+      }
+    },
+    document: {
+      getElementById: () => stubEl(),
+      createElement: () => stubEl(),
+      addEventListener() {},
+    },
+    chrome: {
+      storage: {
+        local: {
+          get: async key => (key === 'noticeAccepted' ? { noticeAccepted: 1 } : {}),
+          set: async () => {},
+        },
+        onChanged: { addListener() {} },
+      },
+      runtime: { onMessage: { addListener() {} } },
+      windows: { update: async () => {} },
+      scripting: { executeScript: async () => [] },
+      tabs: {
+        query: async ({ url }) => {
+          if (url === 'https://myaccounts.capitalone.com/*') return c1Tabs;
+          if (Array.isArray(url)) return signedOutTabs;
+          return [];
+        },
+        get: async id => c1Tabs.find(t => t.id === id) ?? { id, status: 'loading', url: 'about:blank' },
+        create: async opts => {
+          createdTabs.push(opts);
+          const created = { id: 42, status: 'loading', url: 'about:blank', ...opts };
+          setImmediate(() => {
+            // 1. Firefox emits status: 'complete' for about:blank first
+            for (const fn of [...updatedListeners]) fn(42, { status: 'complete' }, { id: 42, status: 'complete', url: 'about:blank' });
+            // 2. Then finishes loading on myaccounts.capitalone.com
+            const loaded = { id: 42, status: 'complete', url: 'https://myaccounts.capitalone.com/accountSummary', cookieStoreId: opts.cookieStoreId };
+            c1Tabs = [loaded];
+            for (const fn of [...updatedListeners]) fn(42, { status: 'complete', url: loaded.url }, loaded);
+          });
+          return created;
+        },
+        update: async () => {},
+        sendMessage: async (_tabId, msg) => {
+          if (msg.type === 'accounts') return { ok: true, data: [{ arid: 'A1', productName: 'Venture', lastFour: '1234' }] };
+          if (msg.type === 'ping') return { ok: true, data: { arid: 'A1' } };
+          if (msg.type === 'cardholders') return { ok: true, data: [] };
+          if (msg.type === 'list') return { ok: true, data: { total: 0, cards: [] } };
+          return { ok: true, data: {} };
+        },
+        onRemoved: { addListener: fn => removedListeners.push(fn) },
+        onUpdated: {
+          addListener: fn => updatedListeners.push(fn),
+          removeListener: fn => {
+            const idx = updatedListeners.indexOf(fn);
+            if (idx !== -1) updatedListeners.splice(idx, 1);
+          },
+        },
+        onActivated: { addListener() {} },
+      },
+    },
+    console: { warn() {} },
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 1,
+    clearInterval,
+    requestAnimationFrame: () => 1,
+  };
+
+  // First run learns cookieStoreId = 'firefox-container-3' from the signed-out tab, then closing
+  // that tab and calling reload() opens a new background tab in that same container.
+  const sandbox = vm.createContext(context);
+  vm.runInContext(panelSource, sandbox);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  signedOutTabs = [];
+  for (const fn of removedListeners) fn(10);
+  await sandbox.reload();
+
+  assert.equal(createdTabs.length, 1);
+  assert.equal(createdTabs[0].cookieStoreId, 'firefox-container-3');
+  assert.equal(createdTabs[0].active, false);
+});
+
+

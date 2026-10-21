@@ -12,7 +12,9 @@
     "storage"
   ],
   "host_permissions": [
-    "https://myaccounts.capitalone.com/*"
+    "https://myaccounts.capitalone.com/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "service-worker.js"

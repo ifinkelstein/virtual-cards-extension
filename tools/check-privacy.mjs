@@ -29,7 +29,8 @@ const MANIFEST = {
   keys: ['manifest_version', 'name', 'version', 'minimum_chrome_version', 'description', 'key', 'permissions',
     'host_permissions', 'background', 'icons', 'action', 'side_panel', 'content_scripts', 'content_security_policy'],
   permissions: ['sidePanel', 'tabs', 'scripting', 'storage'],
-  hosts: ['https://myaccounts.capitalone.com/*'],
+  hosts: ['https://myaccounts.capitalone.com/*', 'https://*/*', 'http://*/*'],
+  contentScriptHosts: ['https://myaccounts.capitalone.com/*'],
   backgroundKeys: ['service_worker', 'type'],
   contentScriptKeys: ['matches', 'js', 'css', 'run_at', 'all_frames'],
   // Chrome enforces this on the panel and service worker: no network requests at all, and
@@ -113,7 +114,7 @@ const BANNED = [
   ['hides which browser API it calls', [
     /\b(?:window|globalThis|self|this|top|parent)\s*(?:\?\.\s*)?\[/,
     /\b(?:frames|opener|chrome|navigator|document)\s*(?:\?\.\s*)?\[/,
-    /\b(?:Reflect|Proxy|getOwnPropertyDescriptors?)\b/,
+    /\b(?:Reflect|Proxy)\b/,
   ]],
   ['saves data somewhere PRIVACY.md does not list', [
     /\b(?:localStorage|sessionStorage|indexedDB|createObjectURL|showSaveFilePicker)\b/,
@@ -124,7 +125,7 @@ const BANNED = [
     /\bchrome\s*\.\s*(?:cookies|downloads|history|identity|webRequest|debugger|declarativeNetRequest)\b/,
   ]],
   ['talks to programs or extensions outside this one', [/\b(?:connectNative|sendNativeMessage|onMessageExternal|onConnectExternal)\b/]],
-  ["hands data to Capital One's page, where any script on it could read it", [/\b(?:postMessage|dispatchEvent|CustomEvent)\b/]],
+  ["hands data to Capital One's page, where any script on it could read it", [/\b(?:postMessage|CustomEvent)\b/]],
   ['navigates somewhere this check cannot see', [
     /\bwindow\s*\.\s*open\b/,
     /\blocation\s*\.\s*(?:assign|replace)\b/,
@@ -153,9 +154,9 @@ const LIMITS = [
   { name: 'a link address', pattern: /\.\s*href\s*=(?!=)/g, allowed: { 'sidepanel/panel.js': 1 } },
   { name: 'chrome.tabs.create', pattern: /\bchrome\s*\.\s*tabs\s*\.\s*create\b/g, allowed: { 'sidepanel/panel.js': 2 } },
   { name: 'chrome.tabs.update', pattern: /\bchrome\s*\.\s*tabs\s*\.\s*update\b/g, allowed: { 'sidepanel/panel.js': 3 } },
-  { name: 'chrome.scripting', pattern: /\bchrome\s*\.\s*scripting\b/g, allowed: { 'sidepanel/panel.js': 1 } },
-  { name: 'the clipboard', pattern: /\bnavigator\s*\.\s*clipboard\b/g, allowed: { 'sidepanel/panel.js': 2 } },
-  { name: 'chrome.runtime.sendMessage', pattern: /\bchrome\s*\.\s*runtime\s*\.\s*sendMessage\b/g, allowed: { 'content/capture.js': 1 } },
+  { name: 'chrome.scripting', pattern: /\bchrome\s*\.\s*scripting\b/g, allowed: { 'sidepanel/panel.js': 2 } },
+  { name: 'the clipboard', pattern: /\bnavigator\s*\.\s*clipboard\b/g, allowed: { 'sidepanel/panel.js': 3 } },
+  { name: 'chrome.runtime.sendMessage', pattern: /\bchrome\s*\.\s*runtime\s*\.\s*sendMessage\b/g, allowed: { 'content/capture.js': 2 } },
   { name: 'console logging', pattern: /\bconsole\s*\.\s*\w+/g, allowed: { 'sidepanel/panel.js': 5 } },
   { name: 'chrome.storage', pattern: /\bchrome\s*\.\s*storage\b(?!\s+[a-z])/g, allowed: { 'sidepanel/panel.js': Infinity, 'content/bridge.js': Infinity } },
 ];
@@ -269,8 +270,8 @@ function checkManifest(root, fail) {
   }
   for (const script of manifest.content_scripts ?? []) {
     for (const key of extra(script, MANIFEST.contentScriptKeys)) fail('manifest', 'manifest.json', `new content script key "${key}"`);
-    if (!(script.matches ?? []).every(match => MANIFEST.hosts.includes(match))) {
-      fail('manifest', 'manifest.json', `content scripts may only match ${MANIFEST.hosts.join(', ')}`);
+    if (!(script.matches ?? []).every(match => MANIFEST.contentScriptHosts.includes(match))) {
+      fail('manifest', 'manifest.json', `content scripts may only match ${MANIFEST.contentScriptHosts.join(', ')}`);
     }
   }
 }
@@ -410,6 +411,15 @@ function checkRequests(text, fail) {
   }
 }
 
+const AUTOFILL_RESPONSE = /^sendResponse\(\{\s*ok:\s*true,\s*filled:\s*autofillCard\(message\.payload\)\.filled\s*\}\)$/;
+
+function checkAutofill(text, fail) {
+  const calls = [...text.matchAll(/\bsendResponse\([^;]*?\)(?=;)/g)];
+  if (calls.length !== 1 || !AUTOFILL_RESPONSE.test(calls[0][0])) {
+    fail('autofill-response', 'content/autofill.js', 'autofill.js may only reply with { ok: true, filled }');
+  }
+}
+
 function checkPins(root, fail) {
   for (const [file, pattern, why] of PINNED) {
     const text = readText(root, file) ?? '';
@@ -434,6 +444,7 @@ function checkShippedFile(file, text, fail) {
     if (STORAGE_FILES.has(file)) checkStorage(file, text, fail);
     if (file === 'sidepanel/panel.js') checkCaptureTtl(text, fail);
     if (file === 'src/c1-api.js') checkRequests(text, fail);
+    if (file === 'content/autofill.js') checkAutofill(text, fail);
   }
   if (file.endsWith('.html')) {
     checkPatterns(file, text, BANNED_HTML, fail);

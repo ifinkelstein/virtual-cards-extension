@@ -100,6 +100,8 @@ const cases = [
   ['a HAR capture', folder => { mkdirSync(join(folder, 'har')); writeFileSync(join(folder, 'har/session.har'), '{}'); }, 'forbidden-file'],
   ['a real-looking card number', append('README.md', `My card: ${realLookingNumber()}`), 'card-number'],
   ['a symbolic link', folder => symlinkSync('/etc/hosts', join(folder, 'src/hosts.js')), 'symlink'],
+  ['autofill sending messages', append('content/autofill.js', "chrome.runtime.sendMessage({ type: 'LEAK' });"), 'limit'],
+  ['autofill returning page data', replace('content/autofill.js', 'filled: autofillCard(message.payload).filled', 'filled: document.body.innerText'), 'autofill-response'],
 ];
 
 after(() => rmSync(scratch, { recursive: true, force: true }));

@@ -82,6 +82,7 @@
     <div class="captured-head">
       <h2>Card details</h2>
       <div class="captured-head-actions">
+        <button id="captured-autofill" type="button" class="ghost">Autofill</button>
         <button id="captured-toggle" type="button" class="ghost" aria-pressed="false">Show</button>
         <button id="captured-dismiss" type="button" class="ghost">Dismiss</button>
       </div>
@@ -132,7 +133,14 @@
   <p id="status" class="status" role="status" aria-live="polite"></p>
 
   <section id="suggested" class="suggested" hidden>
-    <h2 id="suggested-title" class="suggested-title">For this site</h2>
+    <div class="suggested-head">
+      <h2 id="suggested-title" class="suggested-title">For this site</h2>
+      <button id="suggested-create" type="button" class="ghost suggested-new" hidden>+ New card</button>
+    </div>
+    <div id="suggested-empty" class="suggested-empty" hidden>
+      <p id="suggested-prompt" class="suggested-prompt"></p>
+      <button id="suggested-prompt-create" type="button" class="primary"></button>
+    </div>
     <ul id="suggested-cards" class="cards"></ul>
   </section>
 
@@ -167,7 +175,7 @@
           <p class="card-meta"></p>
         </div>
         <div class="card-actions">
-          <button type="button" data-action="reveal">Show</button>
+          <button type="button" data-action="reveal">Use &amp; Autofill</button>
         </div>
       </div>
     </li>
